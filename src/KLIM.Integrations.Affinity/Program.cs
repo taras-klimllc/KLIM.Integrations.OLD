@@ -44,9 +44,9 @@ builder.Services.AddHostedService(sp =>
 {
     var dbOpts = sp.GetRequiredService<IOptions<DatabaseOptions>>().Value;
     var authSvc = sp.GetRequiredService<SqlAuthenticationService>();
-    var logger = sp.GetRequiredService<ILogger<DiagnosticsService>>();
+    var logger = sp.GetRequiredService<ILogger<AffinityDiagnosticsService>>();
     var diagnosticsInterval = builder.Configuration.GetValue<int>("DiagnosticsIntervalMinutes", dbOpts.DiagnosticsIntervalMinutes);
-    return new DiagnosticsService(logger, authSvc, dbOpts, TimeSpan.FromMinutes(Math.Max(1, diagnosticsInterval)));
+    return new AffinityDiagnosticsService(logger, authSvc, dbOpts, diagnosticsInterval);
 });
 
 var app = builder.Build();
@@ -230,50 +230,3 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
 });
 
 app.Run();
-
-// ---------- Diagnostics ----------
-sealed class DiagnosticsService : BackgroundService
-{
-    private readonly ILogger<DiagnosticsService> _logger;
-    private readonly SqlAuthenticationService _authService;
-    private readonly DatabaseOptions _databaseOptions;
-    private readonly TimeSpan _interval;
-
-    public DiagnosticsService(ILogger<DiagnosticsService> logger, SqlAuthenticationService authService, DatabaseOptions databaseOptions, TimeSpan interval)
-    {
-        _logger = logger;
-        _authService = authService;
-        _databaseOptions = databaseOptions;
-        _interval = interval;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Run once on startup for immediate visibility
-        await RunOnce(stoppingToken);
-
-        using var timer = new PeriodicTimer(_interval);
-        while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
-        {
-            await RunOnce(stoppingToken);
-        }
-    }
-
-    private async Task RunOnce(CancellationToken ct)
-    {
-        try
-        {
-            await using var conn = await _authService.OpenConnectionAsync(_databaseOptions.ConnectionString, _databaseOptions.UseAzureAd, ct);
-            var count = await conn.ExecuteScalarAsync<long>(new Dapper.CommandDefinition(
-                "SELECT COUNT_BIG(1) FROM aff.WebhookEvents", cancellationToken: ct));
-            var last = await conn.ExecuteScalarAsync<DateTime?>(new Dapper.CommandDefinition(
-                "SELECT MAX(ReceivedAtUtc) FROM aff.WebhookEvents", cancellationToken: ct));
-            _logger.LogInformation("Diagnostics: webhookCount={Count}, lastReceivedUtc={Last}",
-                count, last?.ToUniversalTime().ToString("o") ?? "n/a");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Diagnostics encountered an error.");
-        }
-    }
-}

@@ -27,7 +27,14 @@ builder.Services.AddSingleton<SqlAuthenticationService>();
 builder.Services.AddSingleton<SqlUpserter>();
 
 // Diagnostics service
-builder.Services.AddHostedService<IntegrationDiagnosticService>();
+builder.Services.AddHostedService(sp =>
+{
+    var dbOpts = sp.GetRequiredService<IOptions<DatabaseOptions>>().Value;
+    var authSvc = sp.GetRequiredService<SqlAuthenticationService>();
+    var logger = sp.GetRequiredService<ILogger<IntegrationDiagnosticService>>();
+    var diagnosticsInterval = builder.Configuration.GetValue<int>("DiagnosticsIntervalMinutes", dbOpts.DiagnosticsIntervalMinutes);
+    return new IntegrationDiagnosticService(logger, authSvc, dbOpts, diagnosticsInterval);
+});
 
 // MassTransit configuration
 builder.Services.AddMassTransit(x =>

@@ -1,0 +1,713 @@
+# KLIM.Events Docker Deployment Instructions
+
+## CONTEXT
+Deploy a KLIM.Events solution using the same Docker infrastructure as KLIM.Integrations. The solution exists but needs comprehensive Docker deployment setup. Focus only on Docker files, deployment commands, and issue resolution.
+
+## INFRASTRUCTURE REQUIREMENTS
+- **RabbitMQ**: External container (competent_burnell - masstransitservices-rabbitmq:latest)
+  - AMQP: localhost:5672 
+  - Management UI: http://localhost:15672 (guest/guest)
+  - Exchange: klim.events (pre-configured)
+- **Database**: Same Azure SQL Database as KLIM.Integrations
+- **Docker**: Version 20.10+ with BuildKit support
+
+## DOCKER FILES TO CREATE
+
+### 1. Multi-Stage Dockerfiles
+
+#### API Service Dockerfile (src/[ProjectName].Api/Dockerfile):
+```dockerfile
+# Multi-stage build for .NET 8 Web API
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy solution and project files for dependency restore
+COPY *.sln ./
+COPY src/[ProjectName].Contracts/[ProjectName].Contracts.csproj src/[ProjectName].Contracts/
+COPY src/[ProjectName].Api/[ProjectName].Api.csproj src/[ProjectName].Api/
+RUN dotnet restore src/[ProjectName].Api/[ProjectName].Api.csproj
+
+# Copy source and publish
+COPY src/ src/
+RUN dotnet publish src/[ProjectName].Api/[ProjectName].Api.csproj \
+    -c Release \
+    -o /app/publish \
+    --no-restore \
+    /p:UseAppHost=false \
+    /p:PublishTrimmed=false
+
+# Runtime stage - ASP.NET Core
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+
+# Create non-root user for security
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/false --create-home appuser
+
+# Set working directory and copy app
+WORKDIR /app
+COPY --from=build --chown=appuser:appgroup /app/publish .
+
+# Configure environment - Use port 8089 to avoid KLIM.Integrations conflict
+ENV ASPNETCORE_URLS=http://0.0.0.0:8089
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+ENV DOTNET_EnableDiagnostics=0
+
+# Expose port
+EXPOSE 8089
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8089/health || exit 1
+
+# Switch to non-root user
+USER appuser
+
+# Start application
+ENTRYPOINT ["dotnet", "[ProjectName].Api.dll"]
+```
+
+#### Worker Service Dockerfile (src/[ProjectName].Processor/Dockerfile):
+```dockerfile
+# Multi-stage build for .NET 8 Worker Service
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy solution and project files for dependency restore
+COPY *.sln ./
+COPY src/[ProjectName].Contracts/[ProjectName].Contracts.csproj src/[ProjectName].Contracts/
+COPY src/[ProjectName].Processor/[ProjectName].Processor.csproj src/[ProjectName].Processor/
+RUN dotnet restore src/[ProjectName].Processor/[ProjectName].Processor.csproj
+
+# Copy source and publish
+COPY src/ src/
+RUN dotnet publish src/[ProjectName].Processor/[ProjectName].Processor.csproj \
+    -c Release \
+    -o /app/publish \
+    --no-restore \
+    /p:UseAppHost=false \
+    /p:PublishTrimmed=false
+
+# Runtime stage - .NET Runtime
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime
+
+# Install curl for health checks and debugging
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/false --create-home appuser
+
+# Set working directory and copy app
+WORKDIR /app
+COPY --from=build --chown=appuser:appgroup /app/publish .
+
+# Configure environment for worker service
+ENV DOTNET_ENVIRONMENT=Production
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+ENV DOTNET_EnableDiagnostics=0
+ENV DOTNET_USE_POLLING_FILE_WATCHER=true
+
+# Switch to non-root user
+USER appuser
+
+# Start worker service
+ENTRYPOINT ["dotnet", "[ProjectName].Processor.dll"]
+```
+
+### 2. Docker Compose Configuration
+
+#### docker-compose.yml:
+```yaml
+version: "3.9"
+
+services:
+  # Events API Service
+  events-api:
+    build:
+      context: .
+      dockerfile: src/[ProjectName].Api/Dockerfile
+      target: runtime
+    image: klim/events-api:${VERSION:-latest}
+    container_name: klim-events-api
+    environment:
+      # Application Configuration
+      ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Production}"
+      ASPNETCORE_URLS: "http://0.0.0.0:8089"
+      
+      # Database Configuration (Same as KLIM.Integrations)
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING:?DATABASE__CONNECTIONSTRING is required}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      
+      # RabbitMQ Configuration (External Instance - Same as KLIM.Integrations)
+      RabbitMQ__Host: "${RABBITMQ__HOST:-host.docker.internal}"
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "${RABBITMQ__EXCHANGENAME:-klim.events}"
+      RabbitMQ__RoutingKeyPrefix: "${RABBITMQ__ROUTINGKEYPREFIX:-klim.events}"
+      
+      # Logging Configuration
+      Logging__LogLevel__Default: "${LOGGING__LOGLEVEL__DEFAULT:-Information}"
+      Logging__LogLevel__Microsoft: "${LOGGING__LOGLEVEL__MICROSOFT:-Warning}"
+      Logging__LogLevel__MassTransit: "${LOGGING__LOGLEVEL__MASSTRANSIT:-Information}"
+    
+    ports:
+      - "${EVENTS_API_PORT:-8089}:8089"
+    
+    networks:
+      - klim-events
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    restart: unless-stopped
+    
+    # Docker networking compatibility for external RabbitMQ
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    labels:
+      - "klim.service=events-api"
+      - "klim.version=${VERSION:-latest}"
+      - "klim.type=web-api"
+
+  # Events Processor Service
+  events-processor:
+    build:
+      context: .
+      dockerfile: src/[ProjectName].Processor/Dockerfile
+      target: runtime
+    image: klim/events-processor:${VERSION:-latest}
+    container_name: klim-events-processor
+    environment:
+      # Application Configuration
+      DOTNET_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Production}"
+      
+      # Database Configuration (Same as KLIM.Integrations)
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING:?DATABASE__CONNECTIONSTRING is required}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      
+      # RabbitMQ Configuration (External Instance - Same as KLIM.Integrations)
+      RabbitMQ__Host: "${RABBITMQ__HOST:-host.docker.internal}"
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "${RABBITMQ__EXCHANGENAME:-klim.events}"
+      RabbitMQ__RoutingKeyPrefix: "${RABBITMQ__ROUTINGKEYPREFIX:-klim.events}"
+      
+      # Consumer Configuration
+      Consumer__QueueName: "${CONSUMER__QUEUENAME:-klim.events.processor}"
+      Consumer__BindingKey: "${CONSUMER__BINDINGKEY:-klim.events.#}"
+      Consumer__Prefetch: "${CONSUMER__PREFETCH:-50}"
+      Consumer__Durable: "${CONSUMER__DURABLE:-true}"
+      Consumer__AutoDelete: "${CONSUMER__AUTODELETE:-false}"
+      
+      # Logging Configuration
+      Logging__LogLevel__Default: "${LOGGING__LOGLEVEL__DEFAULT:-Information}"
+      Logging__LogLevel__Microsoft: "${LOGGING__LOGLEVEL__MICROSOFT:-Warning}"
+      Logging__LogLevel__MassTransit: "${LOGGING__LOGLEVEL__MASSTRANSIT:-Information}"
+    
+    networks:
+      - klim-events
+    
+    depends_on:
+      events-api:
+        condition: service_healthy
+    
+    restart: unless-stopped
+    
+    # Docker networking compatibility for external RabbitMQ
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    labels:
+      - "klim.service=events-processor"
+      - "klim.version=${VERSION:-latest}"
+      - "klim.type=background-service"
+
+# Networks
+networks:
+  klim-events:
+    driver: bridge
+    name: klim-events-network
+    labels:
+      - "klim.network=events"
+
+# =============================================================================
+# EXTERNAL DEPENDENCIES (Same as KLIM.Integrations)
+# =============================================================================
+# RabbitMQ: External container (competent_burnell - masstransitservices-rabbitmq:latest)
+# Connection: localhost:5672 (AMQP), localhost:15672 (Management)
+# Exchange: klim.events (shared with KLIM.Integrations)
+# Database: Same Azure SQL Database as KLIM.Integrations
+```
+
+### 3. Environment Configuration
+
+#### .env.template:
+```bash
+# =============================================================================
+# KLIM.Events - Docker Environment Configuration
+# =============================================================================
+# Copy this file to .env and configure your environment-specific values
+# Uses same infrastructure as KLIM.Integrations
+
+# =============================================================================
+# VERSION CONTROL
+# =============================================================================
+VERSION=latest
+
+# =============================================================================
+# APPLICATION ENVIRONMENT  
+# =============================================================================
+ASPNETCORE_ENVIRONMENT=Production
+
+# =============================================================================
+# PORT CONFIGURATION (Avoid KLIM.Integrations conflict)
+# =============================================================================
+EVENTS_API_PORT=8089
+
+# =============================================================================
+# DATABASE CONFIGURATION (Same as KLIM.Integrations)
+# =============================================================================
+DATABASE__CONNECTIONSTRING=Server=your-server.database.windows.net;Database=your-database;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;
+DATABASE__USEAZUREAD=true
+DATABASE__DIAGNOSTICSINTERVALMINUTES=5
+
+# =============================================================================
+# RABBITMQ CONFIGURATION (External Instance - Same as KLIM.Integrations)
+# =============================================================================
+# External RabbitMQ Configuration
+# Container: competent_burnell (masstransitservices-rabbitmq:latest)
+# AMQP: localhost:5672, Management: http://localhost:15672 (guest/guest)
+# Exchange: klim.events (shared with KLIM.Integrations)
+
+RABBITMQ__HOST=host.docker.internal
+RABBITMQ__USERNAME=guest
+RABBITMQ__PASSWORD=guest
+RABBITMQ__EXCHANGENAME=klim.events
+RABBITMQ__ROUTINGKEYPREFIX=klim.events
+
+# =============================================================================
+# CONSUMER CONFIGURATION
+# =============================================================================
+CONSUMER__QUEUENAME=klim.events.processor
+CONSUMER__BINDINGKEY=klim.events.#
+CONSUMER__PREFETCH=50
+CONSUMER__DURABLE=true
+CONSUMER__AUTODELETE=false
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+LOGGING__LOGLEVEL__DEFAULT=Information
+LOGGING__LOGLEVEL__MICROSOFT=Warning
+LOGGING__LOGLEVEL__MASSTRANSIT=Information
+```
+
+## DEPLOYMENT COMMANDS
+
+### PowerShell-Compatible Direct Commands (Recommended)
+
+#### Build Images:
+```powershell
+# Build Events API
+docker build -t klim/events-api:latest -f src/[ProjectName].Api/Dockerfile .
+
+# Build Events Processor  
+docker build -t klim/events-processor:latest -f src/[ProjectName].Processor/Dockerfile .
+
+# Verify built images
+docker images klim/*
+```
+
+#### Deploy Services:
+```powershell
+# Create environment file
+Copy-Item .env.template .env
+# Edit .env with your configuration
+
+# Start services
+docker-compose up -d
+
+# Verify deployment
+docker-compose ps
+docker-compose logs --tail=50
+```
+
+### PowerShell Deployment Script (deploy.ps1)
+
+```powershell
+param(
+    [Parameter(Position=0)]
+    [ValidateSet("deploy", "build", "stop", "restart", "logs", "status", "help")]
+    [string]$Action = "deploy"
+)
+
+switch ($Action) {
+    "build" {
+        Write-Host "Building KLIM.Events Docker images..." -ForegroundColor Blue
+        
+        docker build -t klim/events-api:latest -f src/[ProjectName].Api/Dockerfile .
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        
+        docker build -t klim/events-processor:latest -f src/[ProjectName].Processor/Dockerfile .
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        
+        Write-Host "Images built successfully!" -ForegroundColor Green
+        docker images klim/*
+    }
+    "deploy" {
+        Write-Host "Deploying KLIM.Events services..." -ForegroundColor Blue
+        
+        # Ensure .env file exists
+        if (-not (Test-Path ".env")) {
+            if (Test-Path ".env.template") {
+                Copy-Item ".env.template" ".env"
+                Write-Host "Created .env from template. Please configure before continuing." -ForegroundColor Yellow
+                return
+            }
+        }
+        
+        # Build and deploy
+        & $MyInvocation.MyCommand.Path build
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        
+        docker-compose up -d
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        
+        Write-Host "Services deployed successfully!" -ForegroundColor Green
+        docker-compose ps
+    }
+    "stop" {
+        docker-compose down
+    }
+    "restart" {
+        docker-compose restart
+    }
+    "logs" {
+        docker-compose logs --tail=50
+    }
+    "status" {
+        docker-compose ps
+        Write-Host "`nDocker images:" -ForegroundColor Blue
+        docker images klim/*
+    }
+    default {
+        Write-Host "Usage: .\deploy.ps1 [build|deploy|stop|restart|logs|status]"
+    }
+}
+```
+
+### Simple Batch Alternative (deploy-simple.bat)
+
+```batch
+@echo off
+setlocal
+
+set ACTION=%1
+if "%ACTION%"=="" set ACTION=deploy
+
+echo [INFO] KLIM.Events Simple Deployment - Action: %ACTION%
+
+REM Validate Docker
+docker --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Docker not available
+    exit /b 1
+)
+
+goto %ACTION%
+
+:build
+echo [INFO] Building KLIM.Events images...
+docker build -t klim/events-api:latest -f src/[ProjectName].Api/Dockerfile .
+if errorlevel 1 exit /b 1
+
+docker build -t klim/events-processor:latest -f src/[ProjectName].Processor/Dockerfile .
+if errorlevel 1 exit /b 1
+
+echo [SUCCESS] Images built successfully
+docker images klim/*
+goto end
+
+:deploy
+if not exist ".env" (
+    if exist ".env.template" (
+        copy .env.template .env
+        echo [WARNING] Created .env from template. Configure before continuing.
+        pause
+    )
+)
+
+call :build
+if errorlevel 1 exit /b 1
+
+echo [INFO] Starting services...
+docker-compose up -d
+if errorlevel 1 exit /b 1
+
+echo [SUCCESS] Deployment completed
+docker-compose ps
+goto end
+
+:stop
+docker-compose down
+goto end
+
+:logs  
+docker-compose logs --tail=50
+goto end
+
+:status
+docker-compose ps
+echo.
+docker images klim/*
+goto end
+
+:end
+```
+
+## VERIFICATION COMMANDS
+
+### Health Checks (Cross-Platform)
+
+#### Linux/macOS:
+```bash
+curl http://localhost:8089/health
+```
+
+#### Windows PowerShell:
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8089/health"
+```
+
+#### Expected Health Response:
+```json
+{
+  "status": "ok",
+  "checks": {
+    "database": { "status": "healthy" },
+    "rabbitmq": { "status": "healthy", "host": "host.docker.internal", "exchange": "klim.events" },
+    "timestampUtc": "2024-01-15T10:35:00Z"
+  }
+}
+```
+
+### RabbitMQ Connectivity Tests
+
+#### Linux/macOS:
+```bash
+# Verify exchange exists
+curl -u guest:guest http://localhost:15672/api/exchanges/%2F/klim.events
+
+# Check connections
+curl -u guest:guest http://localhost:15672/api/connections
+```
+
+#### Windows PowerShell:
+```powershell
+# Setup credentials
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+
+# Verify exchange exists
+Invoke-RestMethod -Uri "http://localhost:15672/api/exchanges/%2F/klim.events" -Headers $headers
+
+# Check connections 
+Invoke-RestMethod -Uri "http://localhost:15672/api/connections" -Headers $headers
+```
+
+### Service Communication Tests
+
+```bash
+# Check logs for RabbitMQ connections
+docker-compose logs events-api | grep -i rabbitmq
+docker-compose logs events-processor | grep -i rabbitmq
+
+# PowerShell equivalent
+docker-compose logs events-api | Select-String -Pattern "rabbitmq" -CaseSensitive:$false
+docker-compose logs events-processor | Select-String -Pattern "rabbitmq" -CaseSensitive:$false
+```
+
+## COMMON DOCKER ISSUES & SOLUTIONS
+
+### 1. Port Conflicts
+**Issue**: Port 8088 already used by KLIM.Integrations
+**Solution**: Events API uses port 8089
+```bash
+EVENTS_API_PORT=8089  # In .env file
+```
+
+### 2. RabbitMQ Connection Issues
+**Issue**: Cannot connect to external RabbitMQ container
+**Solutions**:
+
+#### Check RabbitMQ container status:
+```bash
+docker ps | grep rabbitmq
+docker logs competent_burnell --tail=50
+```
+
+#### Test network connectivity:
+```bash
+# From host
+Test-NetConnection -ComputerName localhost -Port 5672
+
+# From container
+docker exec klim-events-api nc -zv host.docker.internal 5672
+```
+
+#### Alternative host configurations:
+```bash
+# Try these in order if host.docker.internal fails:
+RABBITMQ__HOST=localhost           # If using --network host
+RABBITMQ__HOST=172.17.0.2         # Direct container IP
+RABBITMQ__HOST=competent_burnell   # Container name (requires shared network)
+```
+
+### 3. Database Connection Issues
+**Issue**: Database authentication failures
+**Solutions**:
+
+#### Check connection string format:
+```bash
+# PowerShell - check environment
+docker exec klim-events-api powershell -Command '$env:DATABASE__CONNECTIONSTRING'
+
+# View logs for auth errors
+docker-compose logs events-api | Select-String -Pattern "database|sql|auth" -CaseSensitive:$false
+```
+
+### 4. Build Failures
+**Issue**: Docker build fails with dependency errors
+**Solutions**:
+
+#### Clear Docker cache:
+```bash
+docker builder prune -f
+docker system prune -f
+```
+
+#### Verify solution file exists:
+```bash
+# Ensure solution file is at root
+ls *.sln
+```
+
+#### Check BuildKit support:
+```bash
+docker buildx ls
+```
+
+### 5. Container Startup Issues
+**Issue**: Services fail to start or become healthy
+**Solutions**:
+
+#### Check container logs:
+```bash
+docker-compose logs events-api
+docker-compose logs events-processor
+```
+
+#### Verify health check endpoints:
+```bash
+# Test health check from inside container
+docker exec klim-events-api curl -f http://localhost:8089/health
+```
+
+#### Check resource limits:
+```bash
+docker stats klim-events-api klim-events-processor
+```
+
+### 6. PowerShell Script Issues
+**Issue**: Script execution policy or batch file problems
+**Solutions**:
+
+#### Set execution policy:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+#### Use direct commands instead:
+```powershell
+# Instead of scripts, run directly:
+docker build -t klim/events-api:latest -f src/[ProjectName].Api/Dockerfile .
+docker build -t klim/events-processor:latest -f src/[ProjectName].Processor/Dockerfile .
+docker-compose up -d
+```
+
+## SERVICE URLS AFTER DEPLOYMENT
+
+- **Events API**: http://localhost:8089
+- **Health Check**: http://localhost:8089/health  
+- **RabbitMQ Management**: http://localhost:15672 (guest/guest)
+- **Shared Infrastructure**: Same RabbitMQ and Database as KLIM.Integrations
+
+## FINAL DEPLOYMENT CHECKLIST
+
+- [ ] Docker 20.10+ with BuildKit support installed
+- [ ] External RabbitMQ container (competent_burnell) running
+- [ ] .env file configured with database connection
+- [ ] Port 8089 available (no conflicts)
+- [ ] Multi-stage Dockerfiles created with security (non-root user)
+- [ ] docker-compose.yml with external host mapping
+- [ ] Health checks implemented and working
+- [ ] PowerShell deployment scripts with error handling
+- [ ] Resource limits and logging configured
+- [ ] Verification commands tested across platforms
+
+## MAINTENANCE COMMANDS
+
+```bash
+# View service status
+docker-compose ps
+
+# Update images
+docker-compose pull
+docker-compose up -d --force-recreate  
+
+# View resource usage
+docker stats klim-events-api klim-events-processor
+
+# Clean up old resources  
+docker system prune -f
+
+# Backup configuration
+tar -czf events-config-backup.tar.gz .env docker-compose.yml
