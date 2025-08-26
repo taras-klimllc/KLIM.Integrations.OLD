@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  affinity-integration:
+    build:
+      context: .
+      dockerfile: src/KLIM.Integrations.Affinity/Dockerfile
+    image: klim/affinity-integration:latest
+    environment:
+      Webhooks__Secret: "${WEBHOOKS__SECRET}"
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      RabbitMQ__Host: "localhost"  # Connect to host's RabbitMQ
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "klim.events.integration"
+      RabbitMQ__RoutingKeyPrefix: "klim.integration.affinity"
+      ASPNETCORE_URLS: "http://0.0.0.0:8088"
+    ports:
+      - "8088:8088"
+    network_mode: host  # Use host networking to access localhost RabbitMQ
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8088/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  affinity-sql-writer:
+    build:
+      context: .
+      dockerfile: src/KLIM.Integrations.Affinity.SqlWriter/Dockerfile
+    image: klim/affinity-sql-writer:latest
+    environment:
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      RabbitMQ__Host: "localhost"  # Connect to host's RabbitMQ
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "klim.events.integration"
+      RabbitMQ__RoutingKeyPrefix: "klim.integration.affinity"
+      # CORRECTED: Using standardized queue naming
+      Consumer__QueueName: "${CONSUMER__QUEUENAME:-klim.affinity.sqlwriter}"
+      Consumer__BindingKey: "${CONSUMER__BINDINGKEY:-klim.integration.affinity.#}"
+      Consumer__Prefetch: "${CONSUMER__PREFETCH:-50}"
+    network_mode: host  # Use host networking to access localhost RabbitMQ
+    restart: unless-stopped
+
+# Note: Using host networking to connect to existing RabbitMQ instance
+# No volumes or networks needed since we're using host networking

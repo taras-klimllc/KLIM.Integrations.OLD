@@ -1,0 +1,6 @@
+@KLIM.Integrations.Affinity_HostAddress = http://localhost:5157
+
+GET {{KLIM.Integrations.Affinity_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
