@@ -1,0 +1,901 @@
+# KLIM Integrations - Docker Deployment Guide
+
+This document explains how to build and deploy the KLIM Integrations solution using Docker and Docker Compose.
+
+## ?? Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Building Docker Images](#building-docker-images)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Monitoring and Maintenance](#monitoring-and-maintenance)
+- [Troubleshooting](#troubleshooting)
+- [Production Considerations](#production-considerations)
+
+## ??? Architecture Overview
+
+The KLIM Integrations solution consists of two main services that connect to existing infrastructure:
+
+### 1. Affinity Integration API (`klim/affinity-integration`)
+- **Type**: ASP.NET Core Web API
+- **Purpose**: Receives Affinity webhooks and publishes events to RabbitMQ
+- **Port**: 8088 (configurable)
+- **Base Image**: `mcr.microsoft.com/dotnet/aspnet:8.0`
+- **Health Check**: `GET /health`
+
+### 2. Affinity SQL Writer (`klim/affinity-sql-writer`)
+- **Type**: .NET Worker Service (Background Service)
+- **Purpose**: Consumes RabbitMQ messages and writes data to SQL database
+- **Base Image**: `mcr.microsoft.com/dotnet/runtime:8.0`
+- **Health Monitoring**: Via application logs
+
+### External Dependencies (Pre-existing)
+- **RabbitMQ**: Already deployed separately (`masstransitservices-rabbitmq:latest`)
+  - **AMQP Port**: 5672
+  - **Management UI**: 15672
+  - **Exchange**: `klim.events` (clean naming without environment suffixes)
+- **Azure SQL Database**: External database for persistence
+
+## ?? Prerequisites
+
+### System Requirements
+- **Docker**: Version 20.10+ (with BuildKit support)
+- **Docker Compose**: Version 2.0+
+- **Operating System**: Linux, macOS, or Windows with WSL2
+
+### External Dependencies (Already Deployed)
+- **RabbitMQ**: Running container with accessible ports
+  - Container: `competent_burnell` (masstransitservices-rabbitmq:latest)
+  - AMQP: `localhost:5672`
+  - Management UI: `http://localhost:15672` (guest/guest)
+  - Exchange: `klim.events` preconfigured
+- **SQL Server/Azure SQL Database**: For data persistence
+- **Network Access**: To external APIs and databases
+
+### Development Tools (Optional)
+- **Git**: For version control
+- **curl**: For health checks and testing (Linux/macOS) or **PowerShell** (Windows)
+- **.NET SDK 8.0**: For local development
+
+## ?? Quick Start
+
+### 1. Clone and Setup
+```bash
+# Clone the repository
+git clone <repository-url>
+cd KLIM.Integrations
+
+# Create environment configuration
+cp .env.template .env
+# Edit .env with your configuration
+```
+
+### 2. Configure Environment for External RabbitMQ
+Edit `.env` file with your settings:
+```bash
+# Required: Webhook secret (generate strong random value)
+WEBHOOKS__SECRET=your-webhook-secret-here
+
+# Required: Database connection
+DATABASE__CONNECTIONSTRING=Server=your-server.database.windows.net;Database=your-db;...
+DATABASE__USEAZUREAD=true
+
+# Required: RabbitMQ connection (external instance)
+RABBITMQ__HOST=localhost
+RABBITMQ__USERNAME=guest
+RABBITMQ__PASSWORD=guest
+RABBITMQ__EXCHANGENAME=klim.events
+```
+
+### 3. Verify RabbitMQ Connectivity
+
+#### Linux/macOS:
+```bash
+# Check RabbitMQ is accessible
+curl -u guest:guest http://localhost:15672/api/overview
+
+# Verify the exchange exists
+curl -u guest:guest http://localhost:15672/api/exchanges/%2F/klim.events
+```
+
+#### Windows (PowerShell):
+```powershell
+# Check RabbitMQ is accessible
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers @{Authorization = "Basic $cred"}
+
+# Verify the exchange exists
+Invoke-RestMethod -Uri "http://localhost:15672/api/exchanges/%2F/klim.events" -Headers @{Authorization = "Basic $cred"}
+
+# Alternative using Invoke-WebRequest
+Invoke-WebRequest -Uri "http://localhost:15672/api/overview" -Credential (Get-Credential) # Enter guest/guest when prompted
+```
+
+#### Alternative (Cross-platform):
+```bash
+# Test basic connectivity (no authentication)
+docker exec klim-affinity-integration nc -zv localhost 5672
+
+# Or test from host
+telnet localhost 5672
+```
+
+### 4. Deploy Integration Services
+```bash
+# Build and deploy KLIM Integration services only
+./deploy.sh deploy
+
+# Or use Docker Compose directly
+docker-compose up -d
+
+# Verify deployment
+```
+
+#### Verify Deployment (Cross-platform):
+```bash
+# Linux/macOS
+curl http://localhost:8088/health
+
+# Windows PowerShell
+Invoke-RestMethod -Uri "http://localhost:8088/health"
+
+# Alternative using docker
+docker exec klim-affinity-integration curl -f http://localhost:8088/health
+```
+
+### 5. Test Integration Flow
+
+#### Linux/macOS:
+```bash
+curl -X POST "http://localhost:8088/webhooks/affinity/your-webhook-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "organization.created",
+    "affinityOrganizationId": 123456,
+    "name": "Test Organization",
+    "domain": "test.com"
+  }'
+```
+
+#### Windows PowerShell:
+```powershell
+$body = @{
+    type = "organization.created"
+    affinityOrganizationId = 123456
+    name = "Test Organization"
+    domain = "test.com"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:8088/webhooks/affinity/your-webhook-secret-here" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+#### Check Results:
+```bash
+# Check message in RabbitMQ Management UI (browser)
+# Windows: start http://localhost:15672
+# macOS: open http://localhost:15672  
+# Linux: xdg-open http://localhost:15672
+```
+
+## ?? Building Docker Images
+
+### Automated Build (Recommended)
+
+#### Linux/macOS:
+```bash
+# Build all images with latest tag
+./build-docker.sh
+
+# Build with specific version
+./build-docker.sh v1.2.3
+
+# Build and push to registry
+./build-docker.sh v1.2.3 --push
+```
+
+#### Windows:
+```batch
+REM Build all images with latest tag
+build-docker.bat
+
+REM Build with specific version
+build-docker.bat v1.2.3
+
+REM Build and push to registry
+build-docker.bat v1.2.3 --push
+```
+
+### Manual Build
+```bash
+# Build Affinity Integration API
+docker build -t klim/affinity-integration:latest -f src/KLIM.Integrations.Affinity/Dockerfile .
+
+# Build Affinity SQL Writer
+docker build -t klim/affinity-sql-writer:latest -f src/KLIM.Integrations.Affinity.SqlWriter/Dockerfile .
+```
+
+### Multi-Platform Builds
+```bash
+# Build for multiple platforms (requires buildx)
+docker buildx create --name multiplatform-builder --use
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t klim/affinity-integration:latest \
+  -f src/KLIM.Integrations.Affinity/Dockerfile . --push
+```
+
+## ?? Configuration
+
+### Environment Variables
+
+#### Application Settings
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `ASPNETCORE_ENVIRONMENT` | Application environment | `Production` | No |
+| `VERSION` | Docker image version tag | `latest` | No |
+| `AFFINITY_INTEGRATION_PORT` | External port for API | `8088` | No |
+
+#### Webhook Configuration
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `WEBHOOKS__SECRET` | Webhook authentication secret | - | **Yes** |
+
+#### Database Configuration
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DATABASE__CONNECTIONSTRING` | SQL Server connection string | - | **Yes** |
+| `DATABASE__USEAZUREAD` | Use Azure AD authentication | `true` | No |
+| `DATABASE__DIAGNOSTICSINTERVALMINUTES` | Diagnostics interval | `5` | No |
+
+#### RabbitMQ Configuration (External Instance)
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `RABBITMQ__HOST` | RabbitMQ server hostname | `localhost` | **Yes** |
+| `RABBITMQ__USERNAME` | RabbitMQ username | `guest` | **Yes** |
+| `RABBITMQ__PASSWORD` | RabbitMQ password | `guest` | **Yes** |
+| `RABBITMQ__EXCHANGENAME` | Exchange name | `klim.events` | No |
+| `RABBITMQ__ROUTINGKEYPREFIX` | Routing key prefix | `klim.integration` | No |
+
+> ?? **Note**: RabbitMQ is deployed separately. The containers connect to the existing RabbitMQ instance at `localhost:5672`.
+
+#### Consumer Configuration
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `CONSUMER__QUEUENAME` | Consumer queue name | `klim.affinity.sqlwriter` | No |
+| `CONSUMER__BINDINGKEY` | Message binding pattern | `klim.integration.affinity.#` | No |
+| `CONSUMER__PREFETCH` | Message prefetch count | `50` | No |
+
+### Advanced Configuration
+
+#### Network Configuration for External RabbitMQ
+Since RabbitMQ runs as a separate container, the integration services use:
+
+```bash
+# Docker networking options
+# Option 1: Host networking (current configuration)
+RABBITMQ__HOST=localhost
+
+# Option 2: Docker bridge networking (if RabbitMQ is on the same bridge)
+RABBITMQ__HOST=rabbitmq-container-name
+
+# Option 3: External host (if RabbitMQ is on different machine)
+RABBITMQ__HOST=rabbitmq.company.com
+```
+
+#### Logging Levels
+```bash
+LOGGING__LOGLEVEL__DEFAULT=Information
+LOGGING__LOGLEVEL__MICROSOFT=Warning
+LOGGING__LOGLEVEL__MASSTRANSIT=Information
+```
+
+#### Development Overrides
+```bash
+# For local development with separate RabbitMQ
+ASPNETCORE_ENVIRONMENT=Development
+RABBITMQ__HOST=localhost
+LOGGING__LOGLEVEL__DEFAULT=Debug
+```
+
+## ?? Deployment
+
+### Production Deployment with External RabbitMQ
+
+#### 1. Prepare Environment
+```bash
+# Create production environment file
+cp .env.template .env.production
+
+# Configure for production with external RabbitMQ
+cat > .env.production << EOF
+VERSION=v1.0.0
+ASPNETCORE_ENVIRONMENT=Production
+
+# External RabbitMQ configuration
+RABBITMQ__HOST=localhost
+RABBITMQ__USERNAME=guest
+RABBITMQ__PASSWORD=guest
+RABBITMQ__EXCHANGENAME=klim.events
+
+# Database and webhook configuration
+DATABASE__CONNECTIONSTRING=your-connection-string
+WEBHOOKS__SECRET=your-production-secret
+EOF
+```
+
+#### 2. Deploy Integration Services
+```bash
+# Deploy with specific environment file
+docker-compose --env-file .env.production up -d
+
+# Or use deployment script
+ENV_FILE=.env.production ./deploy.sh deploy
+```
+
+#### 3. Verify Deployment
+```bash
+# Check integration services are running
+docker-compose ps
+
+# Test health endpoints (cross-platform examples)
+```
+
+#### Health Check Verification:
+
+**Linux/macOS:**
+```bash
+curl -f http://localhost:8088/health
+```
+
+**Windows PowerShell:**
+```powershell
+try {
+    $response = Invoke-RestMethod -Uri "http://localhost:8088/health"
+    Write-Host "Health check passed: $($response.status)" -ForegroundColor Green
+    $response | ConvertTo-Json -Depth 10
+} catch {
+    Write-Host "Health check failed: $_" -ForegroundColor Red
+}
+```
+
+**Verify RabbitMQ connectivity:**
+
+**Linux/macOS:**
+```bash
+curl -u guest:guest http://localhost:15672/api/overview
+```
+
+**Windows PowerShell:**
+```powershell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+try {
+    $response = Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers $headers
+    Write-Host "RabbitMQ accessible: $($response.management_version)" -ForegroundColor Green
+} catch {
+    Write-Host "RabbitMQ connection failed: $_" -ForegroundColor Red
+}
+```
+
+#### Check logs for connection status:
+```bash
+docker-compose logs --tail=50
+```
+
+### Development Deployment
+
+#### With Existing RabbitMQ
+```bash
+# Use development configuration
+ASPNETCORE_ENVIRONMENT=Development docker-compose up -d
+```
+
+#### Access Management UI:
+```bash
+# Windows
+start http://localhost:15672
+
+# macOS  
+open http://localhost:15672
+
+# Linux
+xdg-open http://localhost:15672
+
+# Or just navigate to http://localhost:15672 in any browser
+# Login: guest/guest
+```
+
+## ?? Monitoring and Maintenance
+
+### Health Monitoring
+
+#### Integration Services Health
+
+**Cross-platform health check:**
+```bash
+# Linux/macOS
+curl http://localhost:8088/health
+
+# Windows PowerShell
+Invoke-RestMethod -Uri "http://localhost:8088/health" | ConvertTo-Json -Depth 5
+
+# Expected response structure:
+{
+  "status": "ok",
+  "checks": {
+    "database": { "status": "healthy", "webhooks": 1234, "lastReceivedAtUtc": "2024-01-15T10:30:00Z" },
+    "rabbitmq": { "status": "healthy", "host": "localhost", "exchange": "klim.events" },
+    "bus": { "status": "healthy" },
+    "timestampUtc": "2024-01-15T10:35:00Z"
+  }
+}
+```
+
+#### External RabbitMQ Monitoring
+
+**Cross-platform RabbitMQ API calls:**
+
+**Linux/macOS:**
+```bash
+# Check RabbitMQ status via API
+curl -u guest:guest http://localhost:15672/api/overview
+
+# Monitor specific exchange
+curl -u guest:guest http://localhost:15672/api/exchanges/%2F/klim.events
+
+# Check queue depth and consumers
+curl -u guest:guest http://localhost:15672/api/queues/%2F/klim.affinity.sqlwriter
+
+# Monitor connections from integration services
+curl -u guest:guest http://localhost:15672/api/connections
+```
+
+**Windows PowerShell:**
+```powershell
+# Setup credentials for reuse
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+
+# Check RabbitMQ status via API
+Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers $headers
+
+# Monitor specific exchange
+Invoke-RestMethod -Uri "http://localhost:15672/api/exchanges/%2F/klim.events" -Headers $headers
+
+# Check queue depth and consumers
+Invoke-RestMethod -Uri "http://localhost:15672/api/queues/%2F/klim.affinity.sqlwriter" -Headers $headers
+
+# Monitor connections from integration services
+Invoke-RestMethod -Uri "http://localhost:15672/api/connections" -Headers $headers
+```
+
+#### Service Logs
+```bash
+# View integration service logs
+./deploy.sh logs
+
+# View specific service logs
+./deploy.sh logs affinity-integration
+./deploy.sh logs affinity-sql-writer
+
+# Follow logs in real-time
+docker-compose logs -f --tail=100
+
+# Check RabbitMQ container logs
+docker logs competent_burnell --tail=100
+```
+
+#### Resource Monitoring
+```bash
+# Check integration container resource usage
+docker stats klim-affinity-integration klim-affinity-sql-writer
+
+# Include RabbitMQ container monitoring
+docker stats klim-affinity-integration klim-affinity-sql-writer competent_burnell
+
+# Check disk usage
+docker system df
+
+# Check running processes
+docker-compose top
+```
+
+### Maintenance Commands
+
+#### Service Management (Integration Services Only)
+```bash
+# View integration service status
+./deploy.sh status
+
+# Restart integration services
+./deploy.sh restart
+
+# Stop integration services (RabbitMQ remains running)
+./deploy.sh stop
+
+# Update integration services to latest images
+./deploy.sh update
+```
+
+#### RabbitMQ Management
+```bash
+# RabbitMQ is managed separately, but you can monitor:
+
+# Check RabbitMQ container status
+docker ps | grep rabbitmq
+
+# Access RabbitMQ Management UI
+# Windows: start http://localhost:15672
+# macOS: open http://localhost:15672
+# Linux: xdg-open http://localhost:15672
+
+# View RabbitMQ logs
+docker logs competent_burnell -f
+
+# Restart RabbitMQ (if needed - impacts all services)
+docker restart competent_burnell
+```
+
+## ?? Troubleshooting
+
+### Common Issues
+
+#### 1. Health Check Failures
+
+**Test API accessibility (cross-platform):**
+```bash
+# Linux/macOS
+curl -v http://localhost:8088/health
+
+# Windows PowerShell
+try {
+    Invoke-RestMethod -Uri "http://localhost:8088/health" -Verbose
+} catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    $_.Exception.Response | Select-Object StatusCode, StatusDescription
+}
+```
+
+Common causes:
+- Database connection issues
+- RabbitMQ connection problems
+- Port conflicts
+
+#### 2. Database Connection Issues
+```bash
+# Check connection string format
+echo $DATABASE__CONNECTIONSTRING
+
+# PowerShell
+$env:DATABASE__CONNECTIONSTRING
+
+# Test Azure AD authentication
+# Ensure container has network access to Azure
+
+# Check logs for authentication errors
+docker-compose logs affinity-integration | grep -i "database\|sql\|auth"
+
+# PowerShell equivalent
+docker-compose logs affinity-integration | Select-String -Pattern "database|sql|auth" -CaseSensitive:$false
+```
+
+#### 3. RabbitMQ Connection Issues (External Instance)
+
+**Test connectivity (cross-platform):**
+```bash
+# Test basic port connectivity
+telnet localhost 5672
+
+# Or using nc (if available)
+nc -zv localhost 5672
+
+# PowerShell equivalent
+Test-NetConnection -ComputerName localhost -Port 5672
+```
+
+**Check RabbitMQ container status:**
+```bash
+# Verify RabbitMQ container is running
+docker ps | grep rabbitmq
+
+# Check RabbitMQ container logs
+docker logs competent_burnell --tail=50
+```
+
+**Test RabbitMQ API access (cross-platform):**
+
+**Linux/macOS:**
+```bash
+curl -u guest:guest http://localhost:15672/api/overview
+```
+
+**Windows PowerShell:**
+```powershell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+try {
+    $response = Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers $headers
+    Write-Host "RabbitMQ API accessible" -ForegroundColor Green
+    $response.rabbitmq_version
+} catch {
+    Write-Host "RabbitMQ API failed: $_" -ForegroundColor Red
+}
+```
+
+**Verify exchange exists:**
+
+**Linux/macOS:**
+```bash
+curl -u guest:guest http://localhost:15672/api/exchanges/%2F/klim.events
+```
+
+**Windows PowerShell:**
+```powershell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+try {
+    $exchange = Invoke-RestMethod -Uri "http://localhost:15672/api/exchanges/%2F/klim.events" -Headers $headers
+    Write-Host "Exchange 'klim.events' exists: $($exchange.name)" -ForegroundColor Green
+} catch {
+    Write-Host "Exchange 'klim.events' not found or API error: $_" -ForegroundColor Red
+}
+```
+
+**Check network connectivity from integration containers:**
+```bash
+docker exec klim-affinity-integration nc -zv localhost 5672
+
+# PowerShell - test from within container
+docker exec klim-affinity-integration powershell -Command "Test-NetConnection -ComputerName localhost -Port 5672"
+```
+
+#### 4. Message Processing Issues
+```bash
+# Check SQL Writer logs
+docker-compose logs affinity-sql-writer
+
+# Verify queue bindings in RabbitMQ Management UI
+# Navigate to http://localhost:15672/#/queues
+
+# Check message flow: webhook ? API ? RabbitMQ ? SQL Writer
+# 1. Send test webhook (see examples above)
+# 2. Check RabbitMQ messages in management UI
+# 3. Monitor SQL Writer logs
+# 4. Verify database updates
+```
+
+#### 5. PowerShell-Specific curl Issues
+
+If you encounter issues with `curl` in PowerShell, use these alternatives:
+
+```powershell
+# Instead of: curl -u guest:guest http://localhost:15672/api/overview
+# Use:
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers @{Authorization = "Basic $cred"}
+
+# Instead of: curl -X POST "url" -H "Content-Type: application/json" -d '{"key":"value"}'
+# Use:
+$body = @{key="value"} | ConvertTo-Json
+Invoke-RestMethod -Uri "url" -Method POST -ContentType "application/json" -Body $body
+
+# For file downloads, instead of: curl -o file.txt http://example.com/file.txt
+# Use:
+Invoke-WebRequest -Uri "http://example.com/file.txt" -OutFile "file.txt"
+```
+
+### Cross-Platform Command Reference
+
+#### Health Checks
+```bash
+# Linux/macOS
+curl -f http://localhost:8088/health
+
+# Windows PowerShell  
+Invoke-RestMethod -Uri "http://localhost:8088/health"
+
+# Windows Command Prompt (if curl.exe is available)
+curl.exe -f http://localhost:8088/health
+```
+
+#### RabbitMQ API Calls
+```bash
+# Linux/macOS
+curl -u guest:guest http://localhost:15672/api/overview
+
+# Windows PowerShell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+Invoke-RestMethod -Uri "http://localhost:15672/api/overview" -Headers @{Authorization = "Basic $cred"}
+
+# Alternative: Use Invoke-WebRequest with credentials
+$credential = Get-Credential # Enter guest/guest when prompted
+Invoke-WebRequest -Uri "http://localhost:15672/api/overview" -Credential $credential
+```
+
+## ?? Production Considerations
+
+### Security
+
+#### Secrets Management
+```bash
+# Use Docker secrets or external secret management
+# Never commit .env files with real secrets
+
+# Example with Docker Swarm secrets:
+echo "my-webhook-secret" | docker secret create webhook-secret -
+echo "rabbitmq-password" | docker secret create rabbitmq-password -
+```
+
+#### Network Security
+```yaml
+# Use custom networks instead of host networking for production
+networks:
+  klim-integration:
+    driver: bridge
+  rabbitmq-network:
+    driver: bridge
+    # Connect RabbitMQ container to this network
+```
+
+#### RabbitMQ Security
+```bash
+# For production RabbitMQ deployment:
+# - Use dedicated RabbitMQ users (not guest)
+# - Enable TLS/SSL encryption
+# - Configure proper firewall rules
+# - Use RabbitMQ clustering for HA
+```
+
+#### Container Security
+```dockerfile
+# In Dockerfiles, run as non-root user
+RUN addgroup --system --gid 1001 appgroup
+RUN adduser --system --uid 1001 --ingroup appgroup appuser
+USER appuser
+```
+
+### Scalability
+
+#### Horizontal Scaling
+```yaml
+# Scale SQL Writer instances (consumers)
+docker-compose up -d --scale affinity-sql-writer=3
+
+# Use load balancer for API instances
+# Configure RabbitMQ clustering for high availability
+```
+
+#### RabbitMQ Clustering
+```bash
+# For high availability, deploy RabbitMQ cluster
+# Configure multiple RabbitMQ nodes
+# Use HAProxy or similar for RabbitMQ load balancing
+# Update RABBITMQ__HOST to point to load balancer
+```
+
+#### Resource Limits
+```yaml
+# Add resource limits to docker-compose.yml
+services:
+  affinity-integration:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+```
+
+### High Availability
+
+#### Database
+```bash
+# Use Azure SQL Database with geo-replication
+# Configure connection pooling and retry policies
+# Implement circuit breaker patterns
+```
+
+#### Message Queue (External RabbitMQ)
+```bash
+# Deploy RabbitMQ cluster across multiple nodes
+# Configure queue mirroring/replication
+# Use persistent messages for critical data
+# Implement dead letter queues
+```
+
+#### Monitoring
+```bash
+# Integrate with monitoring solutions:
+# - Prometheus + Grafana (can monitor both integration services and RabbitMQ)
+# - Azure Monitor
+# - DataDog, New Relic, etc.
+
+# RabbitMQ monitoring endpoints:
+# - http://localhost:15672/api/overview (JSON metrics)
+# - Prometheus plugin for RabbitMQ metrics
+```
+
+### Backup and Recovery
+
+#### Database Backups
+```sql
+-- Automated backups in Azure SQL Database
+-- Point-in-time recovery available
+-- Configure backup retention policies
+```
+
+#### RabbitMQ Persistence
+```bash
+# RabbitMQ data is persisted in Docker volume
+# Volume: e0d190d226335788ed8f516ad409b2ffc922948f454db085b070bd32b61ee70e
+
+# Create RabbitMQ configuration backups (cross-platform)
+```
+
+**Linux/macOS:**
+```bash
+curl -u guest:guest http://localhost:15672/api/definitions > rabbitmq-backup.json
+```
+
+**Windows PowerShell:**
+```powershell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("guest:guest"))
+$headers = @{Authorization = "Basic $cred"}
+$backup = Invoke-RestMethod -Uri "http://localhost:15672/api/definitions" -Headers $headers
+$backup | ConvertTo-Json -Depth 10 | Out-File -FilePath "rabbitmq-backup.json" -Encoding UTF8
+```
+
+#### Configuration Backups
+```bash
+# Automated backup script in deployment
+./deploy.sh backup
+
+# Store backups in secure location
+# Version control configuration files
+```
+
+### Performance Optimization
+
+#### Image Optimization
+```dockerfile
+# Multi-stage builds to reduce image size
+# Use Alpine-based images where possible
+# Optimize layer caching
+```
+
+#### Application Performance
+```csharp
+// Configure connection pooling
+// Implement caching strategies
+// Use async/await patterns
+// Monitor and optimize SQL queries
+```
+
+#### RabbitMQ Performance Tuning
+```bash
+# Configure appropriate prefetch counts
+# Monitor queue depths
+# Use appropriate queue types (classic vs quorum)
+# Configure memory and disk thresholds
+```
+
+---
+
+## ?? Additional Resources
+
+- [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
+- [Docker Compose Reference](https://docs.docker.com/compose/compose-file/)
+- [ASP.NET Core in Docker](https://docs.microsoft.com/en-us/aspnet/core/host-and-deploy/docker/)
+- [RabbitMQ Management API](https://rabbitmq.com/management.html#http-api)
+- [PowerShell Web Cmdlets](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-restmethod)
+- [KLIM.Events Standards](./KLIM-Events-RabbitMQ-Standards.md)
+
+## ?? License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

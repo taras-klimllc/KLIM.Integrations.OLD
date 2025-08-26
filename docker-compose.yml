@@ -1,0 +1,168 @@
+version: "3.9"
+
+services:
+  # KLIM Affinity Integration - Web API for receiving webhooks
+  affinity-integration:
+    build:
+      context: .
+      dockerfile: src/KLIM.Integrations.Affinity/Dockerfile
+      target: runtime
+    image: klim/affinity-integration:${VERSION:-latest}
+    container_name: klim-affinity-integration
+    environment:
+      # Application Configuration
+      ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Production}"
+      ASPNETCORE_URLS: "http://0.0.0.0:8088"
+      
+      # Webhook Configuration
+      Webhooks__Secret: "${WEBHOOKS__SECRET:?WEBHOOKS__SECRET is required}"
+      
+      # Database Configuration
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING:?DATABASE__CONNECTIONSTRING is required}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      
+      # RabbitMQ Configuration (External Instance - KLIM.Events standards)
+      RabbitMQ__Host: "${RABBITMQ__HOST:-host.docker.internal}"
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "${RABBITMQ__EXCHANGENAME:-klim.events}"
+      RabbitMQ__RoutingKeyPrefix: "${RABBITMQ__ROUTINGKEYPREFIX:-klim.integration}"
+      
+      # Logging Configuration
+      Logging__LogLevel__Default: "${LOGGING__LOGLEVEL__DEFAULT:-Information}"
+      Logging__LogLevel__Microsoft: "${LOGGING__LOGLEVEL__MICROSOFT:-Warning}"
+      Logging__LogLevel__MassTransit: "${LOGGING__LOGLEVEL__MASSTRANSIT:-Information}"
+    
+    ports:
+      - "${AFFINITY_INTEGRATION_PORT:-8088}:8088"
+    
+    networks:
+      - klim-integration
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    restart: unless-stopped
+    
+    # Docker networking compatibility
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Resource limits for development
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    labels:
+      - "klim.service=affinity-integration"
+      - "klim.version=${VERSION:-latest}"
+      - "klim.type=web-api"
+      - "klim.description=Receives Affinity webhooks and publishes to RabbitMQ"
+
+  # KLIM Affinity SqlWriter - Background service for processing messages
+  affinity-sql-writer:
+    build:
+      context: .
+      dockerfile: src/KLIM.Integrations.Affinity.SqlWriter/Dockerfile
+      target: runtime
+    image: klim/affinity-sql-writer:${VERSION:-latest}
+    container_name: klim-affinity-sql-writer
+    environment:
+      # Application Configuration
+      DOTNET_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Production}"
+      
+      # Database Configuration
+      Database__ConnectionString: "${DATABASE__CONNECTIONSTRING:?DATABASE__CONNECTIONSTRING is required}"
+      Database__UseAzureAd: "${DATABASE__USEAZUREAD:-true}"
+      Database__DiagnosticsIntervalMinutes: "${DATABASE__DIAGNOSTICSINTERVALMINUTES:-5}"
+      
+      # RabbitMQ Configuration (External Instance - KLIM.Events standards)
+      RabbitMQ__Host: "${RABBITMQ__HOST:-host.docker.internal}"
+      RabbitMQ__Username: "${RABBITMQ__USERNAME:-guest}"
+      RabbitMQ__Password: "${RABBITMQ__PASSWORD:-guest}"
+      RabbitMQ__ExchangeName: "${RABBITMQ__EXCHANGENAME:-klim.events}"
+      RabbitMQ__RoutingKeyPrefix: "${RABBITMQ__ROUTINGKEYPREFIX:-klim.integration}"
+      
+      # Consumer Configuration
+      Consumer__QueueName: "${CONSUMER__QUEUENAME:-klim.affinity.sqlwriter}"
+      Consumer__BindingKey: "${CONSUMER__BINDINGKEY:-klim.integration.affinity.#}"
+      Consumer__Prefetch: "${CONSUMER__PREFETCH:-50}"
+      Consumer__Durable: "${CONSUMER__DURABLE:-true}"
+      Consumer__AutoDelete: "${CONSUMER__AUTODELETE:-false}"
+      
+      # Logging Configuration
+      Logging__LogLevel__Default: "${LOGGING__LOGLEVEL__DEFAULT:-Information}"
+      Logging__LogLevel__Microsoft: "${LOGGING__LOGLEVEL__MICROSOFT:-Warning}"
+      Logging__LogLevel__MassTransit: "${LOGGING__LOGLEVEL__MASSTRANSIT:-Information}"
+    
+    networks:
+      - klim-integration
+    
+    depends_on:
+      affinity-integration:
+        condition: service_healthy
+    
+    restart: unless-stopped
+    
+    # Docker networking compatibility
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Resource limits for development
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    labels:
+      - "klim.service=affinity-sql-writer"
+      - "klim.version=${VERSION:-latest}"
+      - "klim.type=background-service"
+      - "klim.description=Processes RabbitMQ messages and writes to SQL database"
+
+# Networks
+networks:
+  klim-integration:
+    driver: bridge
+    name: klim-integration-network
+    labels:
+      - "klim.network=integration"
+
+# =============================================================================
+# EXTERNAL DEPENDENCIES
+# =============================================================================
+# RabbitMQ runs as separate container (masstransitservices-rabbitmq:latest)
+# Connection details:
+# - Container: competent_burnell  
+# - AMQP: localhost:5672 (from host perspective)
+# - Management: http://localhost:15672 (guest/guest)
+# - Exchange: klim.events (clean naming)
+# - IP: 172.17.0.2 (bridge network)
+#
+# Database: Azure SQL Database (external)
+# - Configured via DATABASE__CONNECTIONSTRING
+# - Uses Azure AD authentication by default

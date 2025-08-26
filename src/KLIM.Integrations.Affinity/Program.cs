@@ -27,7 +27,7 @@ builder.Services.AddMassTransit(x =>
 
         cfg.Host(mq.Host, h => { h.Username(mq.Username); h.Password(mq.Password); });
 
-        // Use environment-aware exchange name for all integration messages
+        // Use clean exchange name for all integration messages
         cfg.Message<AffinityOrganizationCreatedV1>(m => m.SetEntityName(mq.FullExchangeName));
         cfg.Message<AffinityOrganizationMergedV1>(m => m.SetEntityName(mq.FullExchangeName));
 
@@ -52,11 +52,12 @@ builder.Services.AddHostedService(sp =>
 var app = builder.Build();
 
 // ---------- /health ----------
-app.MapGet("/health", async (IOptions<DatabaseOptions> dbOpts, SqlAuthenticationService authSvc, IBus bus, ILoggerFactory lf) =>
+app.MapGet("/health", async (IOptions<DatabaseOptions> dbOpts, IOptions<RabbitMQOptions> mqOpts, SqlAuthenticationService authSvc, IBus bus, ILoggerFactory lf) =>
 {
     var logger = lf.CreateLogger("Health");
     var checks = new Dictionary<string, object?>();
 
+    // Database Health Check
     try
     {
         await using var conn = await authSvc.OpenConnectionAsync(dbOpts.Value.ConnectionString, dbOpts.Value.UseAzureAd);
@@ -69,9 +70,40 @@ app.MapGet("/health", async (IOptions<DatabaseOptions> dbOpts, SqlAuthentication
         checks["database"] = new { status = "unhealthy", error = ex.Message };
     }
 
+    // RabbitMQ Health Check (Enhanced for External Instance)
     try
     {
-        // A lightweight publish-ready check: ensure bus is created
+        var mq = mqOpts.Value;
+        
+        // Basic bus availability check
+        var busHealthy = bus != null;
+        
+        // Additional RabbitMQ connectivity info
+        var rabbitMqInfo = new
+        {
+            status = busHealthy ? "healthy" : "unhealthy",
+            host = mq.Host,
+            exchange = mq.FullExchangeName,
+            isExternal = mq.IsExternalConnection,
+            connectionType = mq.Host switch
+            {
+                var h when h.Contains("docker.internal") => "docker-internal",
+                var h when h.Contains("localhost") => "localhost", 
+                var h when System.Net.IPAddress.TryParse(h, out _) => "direct-ip",
+                _ => "external-host"
+            }
+        };
+
+        checks["rabbitmq"] = rabbitMqInfo;
+    }
+    catch (Exception ex)
+    {
+        checks["rabbitmq"] = new { status = "unhealthy", error = ex.Message };
+    }
+
+    // Legacy bus check for compatibility
+    try
+    {
         checks["bus"] = new { status = (bus != null) ? "healthy" : "unhealthy" };
     }
     catch (Exception ex)
@@ -81,6 +113,7 @@ app.MapGet("/health", async (IOptions<DatabaseOptions> dbOpts, SqlAuthentication
 
     checks["timestampUtc"] = DateTime.UtcNow.ToString("o");
     var overall = checks.Values.Any(v => v?.ToString()?.Contains("unhealthy", StringComparison.OrdinalIgnoreCase) == true) ? "degraded" : "ok";
+    
     return Results.Json(new { status = overall, checks });
 });
 
@@ -115,7 +148,9 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
     using var scope = logger.BeginScope(new Dictionary<string, object?>
     {
         ["CorrelationId"] = correlationId,
-        ["Source"] = "affinity.webhook"
+        ["Source"] = "affinity.webhook",
+        ["Exchange"] = ro.Value.FullExchangeName,
+        ["RabbitMqHost"] = ro.Value.Host
     });
 
     string detected = "unknown";
@@ -155,7 +190,7 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
                 ["source"] = "affinity.webhook",
                 ["event_type"] = eventSuffix,
                 ["correlation_id"] = correlationId,
-                ["environment"] = ro.Value.Environment ?? "unknown"
+                ["exchange"] = ro.Value.FullExchangeName
             }, request.HttpContext.RequestAborted);
         }
     }
@@ -169,18 +204,19 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
                 ["source"] = "affinity.webhook",
                 ["event_type"] = eventSuffix,
                 ["correlation_id"] = correlationId,
-                ["environment"] = ro.Value.Environment ?? "unknown"
+                ["exchange"] = ro.Value.FullExchangeName
             }, request.HttpContext.RequestAborted);
         }
     }
     else
     {
         // Unknown: publish nothing (stored for analysis) — extend when new events added
-        logger.LogInformation("Unknown webhook type; stored only. correlationId={CorrelationId}", correlationId);
+        logger.LogInformation("Unknown webhook type; stored only. correlationId={CorrelationId}, exchange={Exchange}",
+            correlationId, ro.Value.FullExchangeName);
     }
 
-    logger.LogInformation("Webhook {Event} processed; inserted={Inserted} id={Id}; routing={RoutingKey}; correlationId={CorrelationId}",
-        eventSuffix, inserted, id, routingKey, correlationId);
+    logger.LogInformation("Webhook {Event} processed; inserted={Inserted} id={Id}; routing={RoutingKey}; correlationId={CorrelationId}; exchange={Exchange}",
+        eventSuffix, inserted, id, routingKey, correlationId, ro.Value.FullExchangeName);
 
     return Results.Accepted($"/webhooks/affinity/{secret}", new
     {
@@ -188,7 +224,8 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
         eventType = eventSuffix,
         deduplicated = !inserted,
         routingKey,
-        correlationId
+        correlationId,
+        exchange = ro.Value.FullExchangeName
     });
 });
 

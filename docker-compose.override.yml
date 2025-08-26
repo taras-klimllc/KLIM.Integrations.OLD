@@ -1,0 +1,62 @@
+# =============================================================================
+# Docker Compose Override for Development
+# =============================================================================
+# This file provides development-specific overrides
+# Use: docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+
+version: "3.9"
+
+services:
+  affinity-integration:
+    environment:
+      # Development environment
+      ASPNETCORE_ENVIRONMENT: Development
+      
+      # Debug logging
+      Logging__LogLevel__Default: Debug
+      Logging__LogLevel__MassTransit: Debug
+      
+    # Development resource limits (more generous)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    
+    # Development port mapping (can be overridden)
+    ports:
+      - "8088:8088"
+    
+    # Volume for development (optional - for log persistence)
+    volumes:
+      - ./logs/affinity-integration:/app/logs
+
+  affinity-sql-writer:
+    environment:
+      # Development environment
+      DOTNET_ENVIRONMENT: Development
+      
+      # Debug logging
+      Logging__LogLevel__Default: Debug
+      Logging__LogLevel__MassTransit: Debug
+      
+      # Development consumer settings
+      Consumer__Prefetch: 10
+      
+    # Development resource limits (more generous)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    
+    # Volume for development (optional - for log persistence)
+    volumes:
+      - ./logs/sql-writer:/app/logs
+
+# Development volumes
+volumes:
+  dev-logs:
+    driver: local

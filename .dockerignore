@@ -1,0 +1,124 @@
+# =============================================================================
+# Docker ignore file for KLIM Integrations
+# Optimized for .NET 8 development and Docker builds
+# =============================================================================
+
+# Build artifacts and output directories
+**/bin/
+**/obj/
+**/out/
+**/publish/
+**/TestResults/
+**/coverage/
+**/artifacts/
+
+# IDE and editor files
+**/.vs/
+**/.vscode/
+**/.idea/
+*.user
+*.suo
+*.cache
+*.dotCover
+*.DotSettings
+*.DotSettings.user
+
+# Logs and temporary files
+**/*.log
+**/*.sdf
+**/*.sqlite
+**/*.sqlite3
+**/tmp/
+**/temp/
+**/.tmp/
+**/.temp/
+**/logs/
+
+# Package and dependency files
+**/*.nupkg
+**/*.snupkg
+**/packages/
+**/node_modules/
+**/bower_components/
+
+# Environment and configuration files (security)
+.env*
+**/*.Development.json
+**/*.development.json
+**/*development*.json
+**/appsettings.Local.json
+**/secrets.json
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Documentation and deployment files
+**/*.md
+README*
+CHANGELOG*
+LICENSE*
+deploy/
+docs/
+scripts/
+
+# Docker files (prevent recursion)
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Operating system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+
+# Development and test files
+**/test-data/
+**/mock-data/
+**/*.test.json
+**/*.spec.json
+
+# Backup and temporary files
+*~
+*.bak
+*.swp
+*.swo
+*.orig
+
+# JetBrains Rider
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# NCrunch
+_NCrunch_*
+.*crunch*.local.xml
+nCrunchTemp_*
+
+# Azure Functions
+local.settings.json
+.azure/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Kubernetes
+*.yaml
+*.yml
+!docker-compose.yml
+
+# Coverage reports
+coverage*/
+*.coverage
+*.coveragexml
