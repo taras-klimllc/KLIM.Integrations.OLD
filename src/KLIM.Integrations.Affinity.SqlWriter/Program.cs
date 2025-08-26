@@ -1,12 +1,8 @@
-using Azure.Core;
-using Azure.Identity;
-using KLIM.Integrations.Affinity.SqlWriter.Configuration;
 using KLIM.Integrations.Affinity.SqlWriter.Infrastructure;
 using KLIM.Integrations.Affinity.SqlWriter.Upsert;
 using KLIM.Integrations.Contracts.Events;
 using KLIM.Integrations.Contracts.Infrastructure;
 using MassTransit;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 
 var builder = Host.CreateApplicationBuilder(args);

@@ -1,10 +1,6 @@
-using System.Threading;
-using System.Threading.Tasks;
 using KLIM.Integrations.Affinity.SqlWriter.Upsert;
 using KLIM.Integrations.Contracts.Events;
-using KLIM.Integrations.Contracts.Infrastructure;
 using MassTransit;
-using Microsoft.Extensions.Logging;
 
 public sealed class AffinityOrganizationCreatedConsumer : IConsumer<AffinityOrganizationCreatedV1>
 {

@@ -12,15 +12,15 @@ public sealed class RabbitMQOptions
     /// <summary>RabbitMQ host (e.g., "rabbitmq.company.com" or "localhost")</summary>
     [Required]
     public string Host { get; init; } = "localhost";
-    
+
     /// <summary>RabbitMQ username for authentication</summary>
     [Required]
     public string Username { get; init; } = "guest";
-    
+
     /// <summary>RabbitMQ password for authentication</summary>
     [Required]
     public string Password { get; init; } = "guest";
-    
+
     /// <summary>
     /// Base exchange name following {company}.{domain} pattern
     /// Examples: "klim.events", "acme.commands", "contoso.notifications"
@@ -28,14 +28,14 @@ public sealed class RabbitMQOptions
     [Required]
     [RegularExpression(@"^[a-z]+\.[a-z]+", ErrorMessage = "Exchange name must follow 'company.domain' pattern with lowercase letters")]
     public string ExchangeName { get; init; } = "klim.events.integration";
-    
+
     /// <summary>
     /// Environment identifier for multi-environment deployments
     /// Examples: "dev", "staging", "prod"
     /// </summary>
     [RegularExpression(@"^[a-z]*$", ErrorMessage = "Environment must be lowercase letters only")]
     public string Environment { get; init; } = string.Empty;
-    
+
     /// <summary>
     /// Routing key prefix following {company}.{domain} pattern
     /// Used as base for all message routing keys
@@ -43,14 +43,14 @@ public sealed class RabbitMQOptions
     [Required]
     [RegularExpression(@"^[a-z]+\.[a-z]+", ErrorMessage = "Routing key prefix must follow 'company.domain' pattern")]
     public string RoutingKeyPrefix { get; init; } = "klim.integration.affinity";
-    
+
     /// <summary>
     /// Environment-aware full exchange name
     /// Pattern: {ExchangeName}.{Environment} or {ExchangeName} if no environment
     /// Examples: "klim.events.dev", "klim.events.prod", "klim.events.integration"
     /// </summary>
     public string FullExchangeName => string.IsNullOrEmpty(Environment) ? ExchangeName : $"{ExchangeName}.{Environment}";
-    
+
     /// <summary>
     /// Generates a routing key for integration events
     /// </summary>
@@ -73,14 +73,14 @@ public sealed class ConsumerOptions
     /// </summary>
     [Required]
     public string QueueName { get; init; } = "klim.affinity.sqlwriter";
-    
+
     /// <summary>
     /// Topic binding key pattern for receiving messages
     /// Uses wildcard patterns to subscribe to relevant message types
     /// </summary>
     [Required]
     public string BindingKey { get; init; } = "klim.integration.affinity.#";
-    
+
     /// <summary>
     /// Message prefetch count for consumer performance tuning
     /// </summary>

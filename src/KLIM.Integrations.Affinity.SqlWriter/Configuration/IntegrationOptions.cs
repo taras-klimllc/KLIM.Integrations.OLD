@@ -12,12 +12,12 @@ public sealed class IntegrationOptions
     /// </summary>
     [Required]
     public string ServiceName { get; init; } = "KLIM.Integrations.Affinity.SqlWriter";
-    
+
     /// <summary>
     /// Service version for telemetry and diagnostics
     /// </summary>
     public string Version { get; init; } = "1.0.0";
-    
+
     /// <summary>
     /// Enable detailed diagnostic logging
     /// </summary>

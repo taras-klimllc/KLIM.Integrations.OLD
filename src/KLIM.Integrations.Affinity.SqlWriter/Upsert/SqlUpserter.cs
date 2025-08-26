@@ -1,10 +1,8 @@
-using System.Data;
 using Dapper;
 using KLIM.Integrations.Contracts.Events;
 using KLIM.Integrations.Contracts.Infrastructure;
 using Microsoft.Data.SqlClient;
-using KLIM.Integrations.Affinity.SqlWriter.Infrastructure;
-using KLIM.Integrations.Affinity.SqlWriter.Configuration;
+using System.Data;
 
 namespace KLIM.Integrations.Affinity.SqlWriter.Upsert;
 

@@ -52,10 +52,10 @@ public abstract class IntegrationDiagnosticServiceBase : BackgroundService
     protected async Task<T> ExecuteScalarAsync<T>(string sql, CancellationToken ct = default)
     {
         await using var conn = await _authService.OpenConnectionAsync(
-            _databaseOptions.ConnectionString, 
-            _databaseOptions.UseAzureAd, 
+            _databaseOptions.ConnectionString,
+            _databaseOptions.UseAzureAd,
             ct);
-        
+
         return await conn.ExecuteScalarAsync<T>(new CommandDefinition(sql, cancellationToken: ct));
     }
 

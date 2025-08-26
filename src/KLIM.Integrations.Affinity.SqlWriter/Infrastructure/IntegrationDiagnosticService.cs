@@ -1,9 +1,3 @@
-using System.Data;
-using Dapper;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using KLIM.Integrations.Affinity.SqlWriter.Configuration;
 using KLIM.Integrations.Contracts.Infrastructure;
 
 namespace KLIM.Integrations.Affinity.SqlWriter.Infrastructure;

@@ -22,7 +22,7 @@ public sealed class SqlAuthenticationService
     {
         var credential = new DefaultAzureCredential();
         var token = await credential.GetTokenAsync(
-            new TokenRequestContext(new[] { AZURE_SQL_SCOPE }), 
+            new TokenRequestContext(new[] { AZURE_SQL_SCOPE }),
             cancellationToken);
         return token.Token;
     }
@@ -56,7 +56,7 @@ public sealed class SqlAuthenticationService
     {
         var sanitizedConnectionString = SanitizeConnectionString(connectionString, useAzureAd);
         var conn = new SqlConnection(sanitizedConnectionString);
-        
+
         // Check if connection string already has Azure AD authentication configured
         var csBuilder = new SqlConnectionStringBuilder(sanitizedConnectionString);
         var hasAzureAdAuth = csBuilder.Authentication == SqlAuthenticationMethod.ActiveDirectoryDefault ||
@@ -65,13 +65,13 @@ public sealed class SqlAuthenticationService
                             csBuilder.Authentication == SqlAuthenticationMethod.ActiveDirectoryManagedIdentity ||
                             csBuilder.Authentication == SqlAuthenticationMethod.ActiveDirectoryServicePrincipal ||
                             csBuilder.Authentication == SqlAuthenticationMethod.ActiveDirectoryDeviceCodeFlow;
-        
+
         // Only set AccessToken if using Azure AD but connection string doesn't already specify Azure AD authentication
         if (useAzureAd && !hasAzureAdAuth)
         {
             conn.AccessToken = await AcquireTokenAsync(cancellationToken);
         }
-        
+
         return conn;
     }
 

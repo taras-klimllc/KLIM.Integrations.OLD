@@ -1,7 +1,6 @@
+using MassTransit;
 using System.Text;
 using System.Text.Json;
-using MassTransit;
-using Microsoft.Extensions.Logging;
 
 namespace KLIM.Integrations.Affinity.Infrastructure;
 

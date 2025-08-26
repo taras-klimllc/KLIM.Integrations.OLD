@@ -14,14 +14,14 @@ public sealed class DatabaseOptions
     /// </summary>
     [Required]
     public string ConnectionString { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Whether to use Azure Active Directory authentication
     /// When true, uses DefaultAzureCredential for authentication
     /// When false, uses connection string credentials (SQL Auth)
     /// </summary>
     public bool UseAzureAd { get; set; } = false;
-    
+
     /// <summary>
     /// Diagnostic service interval in minutes
     /// Controls how often diagnostic information is logged

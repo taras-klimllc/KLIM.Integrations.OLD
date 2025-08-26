@@ -1,11 +1,11 @@
-using System.Security.Cryptography;
-using System.Text.Json;
 using Dapper;
 using KLIM.Integrations.Affinity.Infrastructure;
 using KLIM.Integrations.Contracts.Events;
 using KLIM.Integrations.Contracts.Infrastructure;
 using MassTransit;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -130,8 +130,8 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
     string eventSuffix = detected switch
     {
         "organization.created" => "organization.created",
-        "organization.merged"  => "organization.merged",
-        _                      => "unknown"
+        "organization.merged" => "organization.merged",
+        _ => "unknown"
     };
 
     // Insert with SHA-256 dedupe
@@ -141,8 +141,8 @@ app.MapPost("/webhooks/affinity/{secret}", async (HttpRequest request, string se
     await tx.CommitAsync();
 
     // Publish typed messages using KLIM standard routing keys
-    var routingKey = ro.Value.GetRoutingKey(eventSuffix.Replace(".created", "").Replace(".merged", ""), 
-                                           eventSuffix.Contains(".created") ? "created" : 
+    var routingKey = ro.Value.GetRoutingKey(eventSuffix.Replace(".created", "").Replace(".merged", ""),
+                                           eventSuffix.Contains(".created") ? "created" :
                                            eventSuffix.Contains(".merged") ? "merged" : "unknown");
 
     if (eventSuffix == "organization.created")

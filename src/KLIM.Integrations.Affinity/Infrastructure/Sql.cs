@@ -1,7 +1,7 @@
+using Dapper;
 using System.Data;
 using System.Security.Cryptography;
 using System.Text;
-using Dapper;
 
 namespace KLIM.Integrations.Affinity.Infrastructure;
 
